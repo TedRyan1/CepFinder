@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -13,7 +14,7 @@ const (
 	API2 = "http://viacep.com.br/ws/%s/json/"
 )
 
-type Address struct {
+type AddressViaCEP struct {
 	CEP       string `json:"cep"`
 	Logradouro string `json:"logradouro"`
 	Bairro    string `json:"bairro"`
@@ -21,9 +22,26 @@ type Address struct {
 	Estado    string `json:"uf"`
 }
 
+type AddressAPIcep struct {
+	CEP       string `json:"code"`
+	Logradouro string `json:"address"`
+	Bairro    string `json:"district"`
+	Cidade    string `json:"city"`
+	Estado    string `json:"state"`
+}
+
 type Response struct {
-	Address *Address
-	API     string
+	AddressViaCEP *AddressViaCEP
+	AddressAPIcep *AddressAPIcep
+	API           string
+}
+
+func cleanCEP(cep string) string {
+	return strings.ReplaceAll(cep, "-", "")
+}
+
+func formatCEP(cep string) string {
+	return cep[:5] + "-" + cep[5:] 
 }
 
 func fetchFromAPI(cep, apiURL string, ch chan Response) {
@@ -39,33 +57,70 @@ func fetchFromAPI(cep, apiURL string, ch chan Response) {
 	defer resp.Body.Close()
 
 	data, _ := io.ReadAll(resp.Body)
-	address := &Address{}
-	json.Unmarshal(data, address)
 
-	ch <- Response{Address: address, API: apiURL}
+	if apiURL == API1 {
+		address := &AddressAPIcep{}
+		json.Unmarshal(data, address)
+		ch <- Response{AddressAPIcep: address, API: apiURL}
+		return
+	}
+
+	address := &AddressViaCEP{}
+	json.Unmarshal(data, address)
+	ch <- Response{AddressViaCEP: address, API: apiURL}
 }
 
 func main() {
-	fmt.Print("Informe o CEP: ")
-	var cep string
-	fmt.Scanln(&cep)
+	cep := getCEPFromUser()
+	if cep == "" {
+		return
+	} 
 
 	ch := make(chan Response, 2)
+    go fetchFromAPI(formatCEP(cep), API1, ch) 
+	go fetchFromAPI(cep, API2, ch)  
+	displayResult(ch)
+}
 
-	go fetchFromAPI(cep, API1, ch)
-	go fetchFromAPI(cep, API2, ch)
+func getCEPFromUser() string {
+	fmt.Print("Informe o CEP: ")
+	var inputCEP string
+	fmt.Scanln(&inputCEP)
 
+	cleanedCEP := cleanCEP(inputCEP)
+
+	if len(cleanedCEP) != 8 {
+		fmt.Println("Formato inválido. O CEP deve ter 8 dígitos.")
+		return ""
+	}
+	return cleanedCEP
+}
+
+func displayResult(ch chan Response) {
 	select {
 	case result := <-ch:
-		if result.Address != nil {
-			fmt.Printf("Resultado de %s:\n", result.API)
-			fmt.Printf("CEP: %s, Logradouro: %s, Bairro: %s, Cidade: %s, Estado: %s\n",
-				result.Address.CEP, result.Address.Logradouro, result.Address.Bairro,
-				result.Address.Cidade, result.Address.Estado)
-		} else {
-			fmt.Printf("Erro na API %s\n", result.API)
-		}
+		printAPIResponse(result)
 	case <-time.After(1 * time.Second):
 		fmt.Println("Erro: timeout excedido para ambas as APIs.")
 	}
 }
+
+func printAPIResponse(result Response) {
+	if result.API == API1 && result.AddressAPIcep.CEP != "" {
+		fmt.Printf("Resultado de %s:\n", result.API)
+		fmt.Printf("CEP: %s, Logradouro: %s, Bairro: %s, Cidade: %s, Estado: %s\n",
+			result.AddressAPIcep.CEP, result.AddressAPIcep.Logradouro, result.AddressAPIcep.Bairro,
+			result.AddressAPIcep.Cidade, result.AddressAPIcep.Estado)
+		return
+	}
+
+	if result.API == API2 && result.AddressViaCEP.CEP != "" {
+		fmt.Printf("Resultado de %s:\n", result.API)
+		fmt.Printf("CEP: %s, Logradouro: %s, Bairro: %s, Cidade: %s, Estado: %s\n",
+			result.AddressViaCEP.CEP, result.AddressViaCEP.Logradouro, result.AddressViaCEP.Bairro,
+			result.AddressViaCEP.Cidade, result.AddressViaCEP.Estado)
+		return
+	}
+
+	fmt.Printf("Erro na API %s\n", result.API)
+} 
